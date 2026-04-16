@@ -7,21 +7,18 @@ from tqdm import tqdm
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-# ── Config ────────────────────────────────────────────────────────────────────
 PROCESSED_DIR = "data/processed"
 OUTPUT_DIR = "outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-SEQ_LEN = 6  # shorter sequence — more samples from small dataset
+SEQ_LEN = 6
 BATCH_SIZE = 64
 EPOCHS = 30
 LR = 1e-3
-PATCH_SIZE = 16  # smaller patches — more samples, less overfitting
-HIDDEN_DIM = 16  # smaller model — right-sized for our dataset
-# ──────────────────────────────────────────────────────────────────────────────
+PATCH_SIZE = 16
+HIDDEN_DIM = 16
 
 
-# ── Dataset ───────────────────────────────────────────────────────────────────
 class LSTDataset(Dataset):
     def __init__(self, stack, seq_len, patch_size, device):
         self.stack = torch.tensor(stack, dtype=torch.float32).to(device)
@@ -52,7 +49,6 @@ class LSTDataset(Dataset):
         return x, y
 
 
-# ── Model ─────────────────────────────────────────────────────────────────────
 class ConvLSTMCell(nn.Module):
     def __init__(self, in_channels, hidden_channels, kernel_size=3):
         super().__init__()
@@ -99,7 +95,6 @@ class ConvLSTMForecaster(nn.Module):
         return pred
 
 
-# ── Early stopping ────────────────────────────────────────────────────────────
 class EarlyStopping:
     def __init__(self, patience=7, min_delta=0.001):
         self.patience = patience
@@ -116,7 +111,6 @@ class EarlyStopping:
         return self.counter >= self.patience
 
 
-# ── Training ──────────────────────────────────────────────────────────────────
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
@@ -146,7 +140,6 @@ def main():
     best_val = float("inf")
 
     for epoch in range(1, EPOCHS + 1):
-        # ── Train ──
         model.train()
         train_loss = 0.0
         for x, y in tqdm(train_dl, desc=f"Epoch {epoch}/{EPOCHS} [train]", leave=False):
@@ -157,7 +150,6 @@ def main():
             optimizer.step()
             train_loss += loss.item()
 
-        # ── Validate ──
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
@@ -183,7 +175,6 @@ def main():
     print(f"\nTraining complete. Best val MSE: {best_val:.4f}")
     print(f"Model saved to outputs/best_model.pt")
 
-    # ── Statistical anomaly map ───────────────────────────────────────────────
     print("\nGenerating statistical anomaly map from tensor...")
     mean_lst = np.load(os.path.join(PROCESSED_DIR, "lst_mean.npy")).squeeze()
     std_lst  = np.load(os.path.join(PROCESSED_DIR, "lst_std.npy")).squeeze()
@@ -192,13 +183,10 @@ def main():
     x_time   = np.arange(T, dtype=np.float32)
     x_time  -= x_time.mean()
 
-    # Vectorized linear regression across all pixels
     stack_f  = stack.reshape(T, -1)
     slope    = (x_time @ stack_f) / (x_time @ x_time)
     slope    = slope.reshape(H, W)
 
-    # Convert slope from normalized units back to Celsius per timestep
-    # Each timestep is 8 days, so multiply by (365/8) to get °C per year
     slope_celsius = slope * std_lst * (365 / 8)
 
     np.save(os.path.join(OUTPUT_DIR, "trend_slope.npy"),         slope)

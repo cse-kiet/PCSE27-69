@@ -1,9 +1,3 @@
-# 04_visualize.py
-# Produces three figures for the MVP presentation:
-#   main_results.png    — 2×2 grid: mean LST, warming trend, z-score anomaly, combined detection
-#   time_series.png     — West vs East Sahel normalized LST over time
-#   anomaly_timeline.png — % of region flagged anomalous at each timestep
-
 import os
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -17,16 +11,13 @@ import matplotlib.gridspec as gridspec
 from scipy.ndimage import median_filter
 from tqdm import tqdm
 
-# ── Config ────────────────────────────────────────────────────────────────────
 PROCESSED_DIR = "data/processed"
 OUTPUT_DIR    = "outputs"
 HIDDEN_DIM    = 16
 SEQ_LEN       = 6
 PATCH_SIZE    = 16
-# ─────────────────────────────────────────────────────────────────────────────
 
 
-# ── Model definition (inline — no import from 03_train.py) ───────────────────
 class ConvLSTMCell(nn.Module):
     def __init__(self, in_channels, hidden_channels, kernel_size=3):
         super().__init__()
@@ -73,7 +64,6 @@ class ConvLSTMForecaster(nn.Module):
         return pred
 
 
-# ── Reconstruction error map via sliding patch inference ─────────────────────
 def compute_error_map(model, stack, seq_len, patch_size, device):
     """
     Slide the model over every (t, spatial) position to get per-pixel
@@ -109,8 +99,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on: {device}")
 
-    # ── Load data ─────────────────────────────────────────────────────────────
-    stack_raw    = np.load(os.path.join(PROCESSED_DIR, "lst_stack.npy"))        # (T,H,W) z-score
+    stack_raw    = np.load(os.path.join(PROCESSED_DIR, "lst_stack.npy"))
     mean_celsius = np.load(os.path.join(PROCESSED_DIR, "lst_mean_celsius.npy")).squeeze()
     std_celsius  = np.load(os.path.join(PROCESSED_DIR, "lst_std_celsius.npy")).squeeze()
     slope_norm   = np.load(os.path.join(OUTPUT_DIR,    "trend_slope.npy"))
@@ -119,34 +108,20 @@ def main():
     print(f"Stack shape: {stack_raw.shape}")
     print(f"Mean LST range: {mean_celsius.min():.1f} to {mean_celsius.max():.1f} °C")
 
-    # ── Step 1: Separate raw vs display stacks ────────────────────────────────
-    # stack_raw    → anomaly detection and time series (untouched signal)
-    # stack_display → only used to drive display colormaps (stripe-suppressed)
-    # Median filter along spatial axes smooths MODIS stripe artifacts for display
-    # without flattening the temporal signal used for anomaly detection.
     stack_display = median_filter(stack_raw, size=(1, 9, 9))
 
-    # ── Step 2: Slope scaling with median std ─────────────────────────────────
-    # Per-pixel std_celsius has extreme outliers (5–746°C) from artifact pixels.
-    # Using the spatial median gives a robust single scale factor that represents
-    # typical LST variability in the region (~15–25°C for Sub-Saharan Africa).
     median_std    = np.median(std_celsius[std_celsius > 0])
     slope_celsius = slope_norm * median_std * (365 / 8)
     slope_celsius = np.clip(slope_celsius, -2.0, 2.0)
     print(f"Median std: {median_std:.2f} °C")
     print(f"Slope range: {slope_celsius.min():.3f} to {slope_celsius.max():.3f} °C/year")
 
-    # ── Step 3: Persistent anomaly map (PRIMARY signal) ──────────────────────
-    # stack_raw is already z-score normalized (mean=0, std=1) from preprocessing.
-    # Threshold directly on the normalized values — no re-normalization needed.
-    # 0.8 ≈ 0.8σ above baseline; persistent = exceeds threshold in >15% of timesteps.
-    anomaly_mask = (stack_raw > 0.8)                      # (T, H, W) bool
-    z_frac_map   = anomaly_mask.mean(axis=0)              # (H, W) float, 0–1
-    z_flag_cube  = anomaly_mask.astype(np.float32)        # kept for timeline figure
-    persistent   = (z_frac_map > 0.15).astype(np.float32)  # binary: chronic anomaly
+    anomaly_mask = (stack_raw > 0.8)
+    z_frac_map   = anomaly_mask.mean(axis=0)
+    z_flag_cube  = anomaly_mask.astype(np.float32)
+    persistent   = (z_frac_map > 0.15).astype(np.float32)
     print(f"Anomaly map: {persistent.mean()*100:.1f}% of pixels persistently anomalous")
 
-    # ── Step 4: Model reconstruction error (secondary confirming signal) ──────
     model = ConvLSTMForecaster(hidden_dim=HIDDEN_DIM).to(device)
     model.load_state_dict(
         torch.load(os.path.join(OUTPUT_DIR, "best_model.pt"), map_location=device, weights_only=True)
@@ -154,27 +129,20 @@ def main():
     print("Computing reconstruction error map (this takes a few minutes)...")
     error_map = compute_error_map(model, stack_raw, SEQ_LEN, PATCH_SIZE, device)
 
-    # Fix black border: patch inference doesn't reach the outer PATCH_SIZE//2 pixels.
-    # Crop to the covered interior, then pad back with the nearest valid edge value.
     half = PATCH_SIZE // 2
     inner           = error_map[half:-half, half:-half]
     error_map_clean = np.pad(inner, half, mode="edge")
     error_map_clean = median_filter(error_map_clean, size=5)
 
-    # ── Step 5: Combined high-confidence detection mask ───────────────────────
-    # Flag pixels where BOTH the z-score signal AND the model error agree they
-    # are anomalous (top 25% of each). This minimises false positives.
     error_thresh  = np.percentile(error_map_clean, 75)
     z_thresh      = np.percentile(z_frac_map, 75)
     combined_mask = (
         (error_map_clean > error_thresh) & (z_frac_map > z_thresh)
     ).astype(np.float32)
 
-    # ── Step 6: Smoothed display arrays ──────────────────────────────────────
     mean_celsius_disp  = median_filter(mean_celsius,  size=5)
     slope_celsius_disp = median_filter(slope_celsius, size=5)
 
-    # ── Save all arrays for Streamlit dashboard ───────────────────────────────
     np.save(os.path.join(OUTPUT_DIR, "error_map.npy"),        error_map_clean)
     np.save(os.path.join(OUTPUT_DIR, "combined_anomaly.npy"), z_frac_map)
     np.save(os.path.join(OUTPUT_DIR, "flagged_regions.npy"),  persistent)
@@ -184,7 +152,6 @@ def main():
     np.save(os.path.join(OUTPUT_DIR, "z_flag_cube.npy"),      z_flag_cube)
     print("Saved all output arrays to outputs/")
 
-    # ── Figure 1: Main results (2×2 grid) ────────────────────────────────────
     fig = plt.figure(figsize=(16, 10))
     fig.suptitle(
         "Deep Learning for Climate Pattern Change Detection\n"
@@ -193,7 +160,6 @@ def main():
     )
     gs = gridspec.GridSpec(2, 2, hspace=0.35, wspace=0.3)
 
-    # Panel 1: Mean Land Surface Temperature
     ax1 = fig.add_subplot(gs[0, 0])
     im1 = ax1.imshow(mean_celsius_disp, cmap="RdYlBu_r", interpolation="bilinear")
     ax1.set_title("Mean Land Surface Temperature (°C)", fontsize=11)
@@ -201,7 +167,6 @@ def main():
     ax1.axis("off")
     plt.colorbar(im1, ax=ax1, label="°C", shrink=0.85)
 
-    # Panel 2: Warming trend (slope in °C/year)
     ax2 = fig.add_subplot(gs[0, 1])
     im2 = ax2.imshow(
         slope_celsius_disp, cmap="RdYlBu_r",
@@ -212,8 +177,6 @@ def main():
     ax2.axis("off")
     plt.colorbar(im2, ax=ax2, label="°C/year", shrink=0.85)
 
-    # Panel 3: Z-score anomaly map — PRIMARY signal
-    # Shows the fraction of timesteps where each pixel was >2 std from its mean.
     ax3 = fig.add_subplot(gs[1, 0])
     im3 = ax3.imshow(z_frac_map, cmap="YlOrRd", vmin=0, vmax=0.5, interpolation="bilinear")
     ax3.set_title(
@@ -224,10 +187,8 @@ def main():
     ax3.axis("off")
     plt.colorbar(im3, ax=ax3, label="Fraction of timesteps", shrink=0.85)
 
-    # Panel 4: Combined detection — both signals agree
     ax4 = fig.add_subplot(gs[1, 1])
     ax4.imshow(z_frac_map, cmap="YlOrRd", vmin=0, vmax=0.5, interpolation="bilinear")
-    # Red overlay only where BOTH z-score AND model error are in top 25%
     red_overlay = np.ma.masked_where(combined_mask == 0, combined_mask)
     ax4.imshow(red_overlay, cmap="Reds", alpha=0.6, interpolation="bilinear")
     ax4.set_title(
@@ -242,7 +203,6 @@ def main():
     print(f"Saved: {out1}")
     plt.show()
 
-    # ── Figure 2: Regional time series (West vs East Sahel) ──────────────────
     mid  = W // 2
     dates = np.linspace(2018, 2023, T)
 
@@ -271,10 +231,7 @@ def main():
     print(f"Saved: {out2}")
     plt.show()
 
-    # ── Figure 3: Anomaly timeline — WHEN did anomalies peak? ────────────────
-    # For each timestep, what fraction of the region had |z| > 2?
-    # Red shading highlights when that fraction exceeded 20%.
-    pct_flagged = z_flag_cube.mean(axis=(1, 2)) * 100   # (T,) in percent
+    pct_flagged = z_flag_cube.mean(axis=(1, 2)) * 100
 
     fig3, ax3t = plt.subplots(figsize=(12, 4))
     ax3t.plot(dates, pct_flagged, color="orangered", linewidth=1.5, label="% flagged pixels")
@@ -297,7 +254,6 @@ def main():
     print(f"Saved: {out3}")
     plt.show()
 
-    # ── Summary stats ─────────────────────────────────────────────────────────
     flagged_pct  = persistent.mean() * 100
     max_warming  = slope_celsius.max()
     mean_warming = slope_celsius[slope_celsius > 0].mean()

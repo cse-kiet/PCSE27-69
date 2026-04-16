@@ -1,15 +1,11 @@
 import earthaccess
 import os
 
-# ── Config ────────────────────────────────────────────────────────────────────
-# Bounding box: Sub-Saharan Africa (west, south, east, north)
 BBOX = (-18.0, -35.0, 52.0, 15.0)
 
-# Date range — 5 years of 8-day composites gives ~230 timesteps
 DATE_START = "2018-01-01"
 DATE_END = "2022-12-31"
 
-# MODIS product: MOD11A2 = 8-day LST, 1km resolution, Terra satellite
 PRODUCT = "MOD11A2"
 VERSION = "061"
 
@@ -17,7 +13,6 @@ TILE_FILTER = {"h17v07", "h18v07"}
 
 OUTPUT_DIR = "data/raw2"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 def main():
@@ -40,7 +35,6 @@ def main():
         f"Found {len(results)} total granules, keeping {len(filtered)} after tile filter."
     )
 
-    # Clear old raw files before downloading the smaller set
     print("Downloading filtered tiles...")
     earthaccess.download(filtered, local_path=OUTPUT_DIR)
     print(f"Done. Files saved to {OUTPUT_DIR}/")
