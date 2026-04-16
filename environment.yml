@@ -1,0 +1,22 @@
+name: gaia-v1
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy
+  - scipy
+  - matplotlib
+  - cartopy
+  - rasterio
+  - h5py
+  - requests
+  - tqdm
+  - jupyter
+  - pip
+  - pip:
+      - earthaccess
+      - torch
+      - torchvision
+      - pyhdf
+      - einops
